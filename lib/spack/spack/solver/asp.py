@@ -644,7 +644,7 @@ class PyclingoDriver(object):
 class SpackSolverSetup(object):
     """Class to set up and run a Spack concretization solve."""
 
-    def __init__(self, reuse=False, tests=False):
+    def __init__(self, solver):
         self.gen = None  # set by setup()
 
         self.declared_versions = {}
@@ -669,11 +669,8 @@ class SpackSolverSetup(object):
         # Caches to optimize the setup phase of the solver
         self.target_specs_cache = None
 
-        # whether to add installed/binary hashes to the solve
-        self.reuse = reuse
-
-        # whether to add installed/binary hashes to the solve
-        self.tests = tests
+        # Solver that created this SpackSolverSetup. Used to get at preferences.
+        self.solver = solver
 
     def pkg_version_rules(self, pkg):
         """Output declared versions of a package.
@@ -809,7 +806,7 @@ class SpackSolverSetup(object):
                 pkg.name, cspec.name, cspec.version, -i * 100
             ))
 
-    def pkg_rules(self, pkg, tests):
+    def pkg_rules(self, pkg):
         pkg = packagize(pkg)
 
         # versions
@@ -945,11 +942,12 @@ class SpackSolverSetup(object):
             for cond, dep in sorted(conditions.items()):
                 deptypes = dep.type.copy()
                 # Skip test dependencies if they're not requested
-                if not self.tests:
+                test_pkgs = self.solver.tests
+                if not test_pkgs:
                     deptypes.discard("test")
 
                 # ... or if they are requested only for certain packages
-                if not isinstance(self.tests, bool) and pkg.name not in self.tests:
+                if not isinstance(test_pkgs, bool) and pkg.name not in test_pkgs:
                     deptypes.discard("test")
 
                 # if there are no dependency types to be considered
@@ -1705,10 +1703,14 @@ class SpackSolverSetup(object):
         self.gen.h1("Concrete input spec definitions")
         self.define_concrete_input_specs(specs, possible)
 
-        if self.reuse:
-            self.gen.h1("Installed packages")
+        self.gen.h1("Concretizer options")
+        if self.solver.reuse:
             self.gen.fact(fn.optimize_for_reuse())
-            self.gen.newline()
+        if self.solver.minimal:
+            self.gen.fact(fn.minimal_installs())
+
+        if self.solver.reuse:
+            self.gen.h1("Installed packages")
             self.define_installed_packages(specs, possible)
 
         self.gen.h1('General Constraints')
@@ -1729,7 +1731,7 @@ class SpackSolverSetup(object):
         self.gen.h1('Package Constraints')
         for pkg in sorted(pkgs):
             self.gen.h2('Package rules: %s' % pkg)
-            self.pkg_rules(pkg, tests=self.tests)
+            self.pkg_rules(pkg)
             self.gen.h2('Package preferences: %s' % pkg)
             self.preferred_variants(pkg)
             self.preferred_targets(pkg)
@@ -2043,6 +2045,10 @@ class Solver(object):
       ``reuse (bool)``
         Whether to try to reuse existing installs/binaries
 
+      ``minimal (bool)``
+        If ``True`` make minimizing nodes the top priority, even higher
+        than defaults from packages and preferences.
+
       ``show (tuple)``
         What information to print to the console while running. Options are:
         * asp: asp program text
@@ -2073,6 +2079,7 @@ class Solver(object):
         # These properties are settable via spack configuration. `None`
         # means go with the configuration setting; user can override.
         self.reuse = None
+        self.minimal = None
 
         # these are concretizer settings
         self.dump = ()
@@ -2095,8 +2102,10 @@ class Solver(object):
 
         if self.reuse is None:
             self.reuse = spack.config.get("concretizer:reuse", False)
+        if self.minimal is None:
+            self.minimal = spack.config.get("concretizer:minimal", False)
 
-        setup = SpackSolverSetup(reuse=self.reuse, tests=self.tests)
+        setup = SpackSolverSetup(self)
         return driver.solve(
             setup, specs, self.dump, self.models, self.timers, self.stats
         )
